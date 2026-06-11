@@ -1,164 +1,90 @@
 # 🚀 TaskFlow
 
-TaskFlow is a **FastAPI-based web task management system** that allows users to securely register, log in, and manage personal tasks through a modern web dashboard 📋.
-
-Each user has their own account and isolated task list 👤. After signing in, users can create ➕, edit ✏️, complete ✔️, and delete ❌ tasks while tracking their progress 📊.
+TaskFlow is a FastAPI-based task management web application with user authentication 🔐 and full CRUD functionality 📋.
 
 ---
 
-# 📋 TASKFLOW - SYSTEM ARCHITECTURE
-
-## 🧠 SYSTEM OVERVIEW
-
-TaskFlow is a FastAPI web application designed for secure, user-based task management with session authentication 🔐.
-
-**Tech Stack:**
-- Python 🐍
-- FastAPI ⚡
-- HTML / CSS 🎨
-- Session-based Authentication 🔐
-- In-memory Python Dictionaries 🧠
+## 🌐 Live App
+👉 https://YOUR-RAILWAY-LINK-HERE
 
 ---
 
-## 🔄 USER FLOW
+## 🚀 Deployment (Railway)
 
-User Registration / Login → Authentication → Dashboard → Task Management (CRUD)
+GitHub Deploy (Recommended):
+1. Push project to GitHub
+2. Go to https://railway.app
+3. Click New Project → Deploy from GitHub Repo
+4. Select repository
+5. Railway auto-detects FastAPI ⚡
+6. Add environment variables (if needed)
+7. Deploy 🚀
+8. Copy your live URL 🌐
 
----
-
-## 🧩 SYSTEM COMPONENTS
-
-### ⚡ FASTAPI APPLICATION
-Handles routing and backend logic.
-
-**Responsibilities:**
-- 🏠 Landing Page
-- 🧾 User Registration
-- 🔐 Login / Logout
-- 📋 Dashboard
-- 🧩 Task CRUD Operations
-
----
-
-### 🔐 AUTHENTICATION SYSTEM
-Manages users and sessions.
-
-**Stored Data:**
-- Users 👤
-- Session Tokens 🔑
-- Cookies 🍪
-
-**Functions:**
-- Register Account
-- Login User
-- Logout User
-- Validate Sessions
-- Verify Credentials
+Railway CLI Deploy:
+npm install -g @railway/cli
+railway login
+railway init
+railway up
+railway variables set APP_PASSWORD=your_secure_password
 
 ---
 
-### 📌 TASK MANAGEMENT SYSTEM
-Each user has a private task list stored in memory 🧠.
+## 💻 Run Locally
 
-**Task Structure:**
-- 🆔 ID
-- 📝 Title
-- 🏷️ Category
-- ⚡ Priority
-- 📂 Task Type
-- 📅 Due Date
-- ✔️ Completion Status
+pip install -r requirements.txt
+uvicorn main:app --reload
 
-**Operations:**
-- ➕ Add Task
-- ✏️ Edit Task
-- ✔️ Complete Task
-- ❌ Delete Task
-- 📊 Display Tasks
+Open in browser:
+http://localhost:8000
 
 ---
 
-## 🔁 SYSTEM FLOW
+## ⚙️ Environment Variables
 
-### 🔐 Authentication Flow
-Register → Login → Session Created → Dashboard Access
-
-### 📋 Task Flow
-Create Task → Store in User Data → Display → Update / Complete / Delete
+APP_PASSWORD=your_secure_password
 
 ---
 
-## 💾 DATA STORAGE
+## 🧠 Project Overview
 
-TaskFlow uses in-memory Python dictionaries 🧠.
+TaskFlow lets users:
+🔐 Register & login  
+👤 Access personal dashboard  
+➕ Create tasks  
+✏️ Edit tasks  
+✔️ Complete tasks  
+❌ Delete tasks  
 
-⚠️ Data resets when server restarts.
-
-Stored:
-- Users 👤
-- Sessions 🔑
-- Tasks per user 📋
-
----
-
-## ⚙️ CORE FUNCTIONS
-
-### 🔐 AUTHENTICATION
-- Register User
-- Login User
-- Logout User
-- Validate Credentials
-- Create Session
-
-### 📋 DASHBOARD
-- Display Tasks
-- Show Progress 📊
-- Calculate Statistics
-
-### 🧩 TASK MANAGEMENT
-- Add Task ➕
-- Edit Task ✏️
-- Complete Task ✔️
-- Delete Task ❌
+Full system design (Miro):
+👉 https://YOUR-MIRO-LINK-HERE
 
 ---
 
-## ✨ KEY FEATURES
+## ✨ Features
 
-✔️ User Registration  
-✔️ Secure Login System 🔐  
-✔️ Session Authentication 🍪  
-✔️ Personal Dashboard 📋  
-✔️ Add / Edit / Delete Tasks  
-✔️ Mark Tasks as Complete ✔️  
-✔️ Progress Tracking 📊  
-✔️ Due Date Monitoring 📅  
-✔️ User-based Data Isolation 👤  
-✔️ Clean Web Interface 🎨  
+🔐 Authentication system  
+👤 User-specific dashboards  
+➕ Create tasks  
+✏️ Edit tasks  
+✔️ Complete tasks  
+❌ Delete tasks  
+📊 Progress tracking  
 
 ---
 
-## 🚀 LIVE DEMO
+## 🛠️ Tech Stack
 
-🌐 https://YOUR-RAILWAY-LINK-HERE
-
----
-
-## 🗺️ SYSTEM DESIGN (MIRO)
-
-📊 https://YOUR-MIRO-LINK-HERE
-
-Includes:
-- System architecture 🏗️
-- Authentication flow 🔐
-- Task lifecycle 🔄
-- Backend routing 📡
+Python 🐍  
+FastAPI ⚡  
+HTML / CSS 🎨  
+Session authentication 🔐  
+In-memory storage 🧠  
 
 ---
 
-## 🧾 FINAL NOTE
+## 📝 Notes
 
-TaskFlow is a clean, scalable backend project demonstrating FastAPI ⚡, authentication 🔐, CRUD operations 🧩, and real-world deployment ☁️.
-
-Built for learning, portfolio showcase, and production-style backend practice 🚀
+⚠️ Data resets on restart  
+🔄 Sessions may reset depending on setup  
+🚀 Built for learning + portfolio showcase  
