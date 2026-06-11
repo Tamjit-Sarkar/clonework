@@ -533,7 +533,7 @@ def landing():
 
 <footer>
   <div class="footer-logo">TASK<span>FLOW</span></div>
-  <div>Built with FastAPI · Zero clutter · Maximum focus</div>
+  <div>Built with FastAPI · TamjitTask · Maximum focus</div>
 </footer>
 
 </body>
@@ -799,6 +799,11 @@ def dashboard(session: Optional[str] = Cookie(default=None)):
   .task-item.urgent {{ border-left-color:var(--danger); }}
   .task-item.overdue {{ border-left-color:var(--danger); }}
   .task-item.upcoming {{ border-left-color:var(--warning); }}
+
+  /* Task cards use a light pastel inline background — keep text dark in dark mode */
+  html[data-theme="dark"] .task-item h3,
+  html[data-theme="dark"] .task-meta,
+  html[data-theme="dark"] .task-item .status-label {{ color: #1a2233 !important; }}
 
   .checkbox {{
     width:22px; height:22px; border:2px solid var(--border);
