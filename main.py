@@ -7,8 +7,8 @@ A FastAPI task management application.
 import secrets
 from abc import ABC, abstractmethod
 from datetime import date, datetime
-from typing import Optional
 from itertools import count
+from typing import Optional
 
 from fastapi import Cookie, FastAPI, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -24,11 +24,19 @@ task_id_counter = count(1)
 
 # ─── Task Class Hierarchy ─────────────────────────────────────────────────────
 
+
 class Task(ABC):
     """Abstract base class — every task type must implement get_type()."""
 
-    def __init__(self, task_id: int, title: str, category: str,
-                 priority: str, due_date: str, completed: bool = False):
+    def __init__(
+        self,
+        task_id: int,
+        title: str,
+        category: str,
+        priority: str,
+        due_date: str,
+        completed: bool = False,
+    ):
         self.id = task_id
         self.title = title
         self.category = category
@@ -69,6 +77,7 @@ class PersonalTask(Task):
 
 # ─── Password Hasher Hierarchy ────────────────────────────────────────────────
 
+
 class PasswordHasher(ABC):
     """Abstract hasher — swap implementations without touching auth logic."""
 
@@ -93,6 +102,7 @@ _hasher: PasswordHasher = PlainHasher()
 
 # ─── Task Status Hierarchy ────────────────────────────────────────────────────
 
+
 class TaskStatus(ABC):
     """Abstract status — each subclass knows its own label and CSS class."""
 
@@ -106,34 +116,49 @@ class TaskStatus(ABC):
 
 
 class CompletedStatus(TaskStatus):
-    def label(self) -> str:      return "Completed"
-    def css_class(self) -> str:  return "completed"
+    def label(self) -> str:
+        return "Completed"
+
+    def css_class(self) -> str:
+        return "completed"
 
 
 class OverdueStatus(TaskStatus):
     def __init__(self, days: int):
         self._days = days
 
-    def label(self) -> str:      return f"Overdue by {self._days}d"
-    def css_class(self) -> str:  return "overdue"
+    def label(self) -> str:
+        return f"Overdue by {self._days}d"
+
+    def css_class(self) -> str:
+        return "overdue"
 
 
 class DueTodayStatus(TaskStatus):
-    def label(self) -> str:      return "Due today"
-    def css_class(self) -> str:  return "urgent"
+    def label(self) -> str:
+        return "Due today"
+
+    def css_class(self) -> str:
+        return "urgent"
 
 
 class DueTomorrowStatus(TaskStatus):
-    def label(self) -> str:      return "Due tomorrow"
-    def css_class(self) -> str:  return "upcoming"
+    def label(self) -> str:
+        return "Due tomorrow"
+
+    def css_class(self) -> str:
+        return "upcoming"
 
 
 class FutureStatus(TaskStatus):
     def __init__(self, days: int):
         self._days = days
 
-    def label(self) -> str:      return f"{self._days}d left"
-    def css_class(self) -> str:  return "normal"
+    def label(self) -> str:
+        return f"{self._days}d left"
+
+    def css_class(self) -> str:
+        return "normal"
 
 
 def _resolve_status(task: dict, days_left: int) -> TaskStatus:
