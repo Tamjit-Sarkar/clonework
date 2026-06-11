@@ -1,38 +1,204 @@
-from fastapi import FastAPI, Form, Request, Response, Cookie
-from fastapi.responses import HTMLResponse, RedirectResponse
-from pydantic import BaseModel
-from datetime import datetime, date
-from typing import Optional
-import os
+"""
+TaskFlow.
+
+A FastAPI task management application.
+"""
+
 import secrets
+from abc import ABC, abstractmethod
+from datetime import date, datetime
+from typing import Optional
+from itertools import count
+
+from fastapi import Cookie, FastAPI, Form
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 app = FastAPI()
 
-# ─── Auth ────────────────────────────────────────────────────────────────────
-APP_PASSWORD = os.environ.get("APP_PASSWORD", "taskflow2024")
-sessions: set = set()
+# ─── Data Storage ─────────────────────────────────────────────────────────────
+registered_users: dict[str, str] = {}
+sessions: dict[str, str] = {}
+user_tasks: dict[str, list[dict]] = {}
+task_id_counter = count(1)
+
+
+# ─── Task Class Hierarchy ─────────────────────────────────────────────────────
+
+class Task(ABC):
+    """Abstract base class — every task type must implement get_type()."""
+
+    def __init__(self, task_id: int, title: str, category: str,
+                 priority: str, due_date: str, completed: bool = False):
+        self.id = task_id
+        self.title = title
+        self.category = category
+        self.priority = priority
+        self.due_date = due_date
+        self.completed = completed
+
+    @abstractmethod
+    def get_type(self) -> str:
+        """Return the task type string (e.g. 'Work' or 'Personal')."""
+
+    def to_dict(self) -> dict:
+        """Serialise to the dict format used throughout the application."""
+        return {
+            "id": self.id,
+            "title": self.title,
+            "category": self.category,
+            "priority": self.priority,
+            "due_date": self.due_date,
+            "task_type": self.get_type(),
+            "completed": self.completed,
+        }
+
+
+class WorkTask(Task):
+    """A work-related task."""
+
+    def get_type(self) -> str:
+        return "Work"
+
+
+class PersonalTask(Task):
+    """A personal task."""
+
+    def get_type(self) -> str:
+        return "Personal"
+
+
+# ─── Password Hasher Hierarchy ────────────────────────────────────────────────
+
+class PasswordHasher(ABC):
+    """Abstract hasher — swap implementations without touching auth logic."""
+
+    @abstractmethod
+    def hash(self, password: str) -> str:
+        """Return a hashed version of the password."""
+
+    def verify(self, password: str, stored: str) -> bool:
+        """Check a plain password against a stored hash."""
+        return self.hash(password) == stored
+
+
+class PlainHasher(PasswordHasher):
+    """Plain-text hasher (placeholder — no real hashing)."""
+
+    def hash(self, password: str) -> str:
+        return password
+
+
+_hasher: PasswordHasher = PlainHasher()
+
+
+# ─── Task Status Hierarchy ────────────────────────────────────────────────────
+
+class TaskStatus(ABC):
+    """Abstract status — each subclass knows its own label and CSS class."""
+
+    @abstractmethod
+    def label(self) -> str:
+        """Human-readable status string."""
+
+    @abstractmethod
+    def css_class(self) -> str:
+        """CSS class used to style the task row."""
+
+
+class CompletedStatus(TaskStatus):
+    def label(self) -> str:      return "Completed"
+    def css_class(self) -> str:  return "completed"
+
+
+class OverdueStatus(TaskStatus):
+    def __init__(self, days: int):
+        self._days = days
+
+    def label(self) -> str:      return f"Overdue by {self._days}d"
+    def css_class(self) -> str:  return "overdue"
+
+
+class DueTodayStatus(TaskStatus):
+    def label(self) -> str:      return "Due today"
+    def css_class(self) -> str:  return "urgent"
+
+
+class DueTomorrowStatus(TaskStatus):
+    def label(self) -> str:      return "Due tomorrow"
+    def css_class(self) -> str:  return "upcoming"
+
+
+class FutureStatus(TaskStatus):
+    def __init__(self, days: int):
+        self._days = days
+
+    def label(self) -> str:      return f"{self._days}d left"
+    def css_class(self) -> str:  return "normal"
+
+
+def _resolve_status(task: dict, days_left: int) -> TaskStatus:
+    """Return the correct TaskStatus subclass — polymorphism replaces if/elif."""
+    if task["completed"]:
+        return CompletedStatus()
+    if days_left < 0:
+        return OverdueStatus(abs(days_left))
+    if days_left == 0:
+        return DueTodayStatus()
+    if days_left == 1:
+        return DueTomorrowStatus()
+    return FutureStatus(days_left)
+
+
+# ─── Auth Helpers ─────────────────────────────────────────────────────────────
+def hash_password(password: str) -> str:
+    """Hash a password using the configured PasswordHasher."""
+    return _hasher.hash(password)
+
+
+def get_current_user(session: Optional[str]) -> Optional[str]:
+    """Get username from session token"""
+    if session is None:
+        return None
+    return sessions.get(session)
 
 
 def is_authenticated(session: Optional[str]) -> bool:
-    return session is not None and session in sessions
+    """Check if session is valid"""
+    return get_current_user(session) is not None
 
 
-# ─── Data ────────────────────────────────────────────────────────────────────
-tasks: list = []
-next_task_id: int = 1
+def username_exists(username: str) -> bool:
+    """Check if username is already registered"""
+    return username.lower() in registered_users
 
 
-class Task(BaseModel):
-    title: str
-    category: str
-    priority: str
-    due_date: str
-    task_type: str
+def validate_credentials(username: str, password: str) -> tuple[bool, str]:
+    """Validate username and password format"""
+    if not username or len(username) < 2:
+        return False, "Username must be at least 2 characters"
+    if not password or len(password) < 3:
+        return False, "Password must be at least 3 characters"
+    if " " in username:
+        return False, "Username cannot contain spaces"
+    return True, ""
 
 
-# ─── Landing Page ─────────────────────────────────────────────────────────────
+def check_password(username: str, password: str) -> bool:
+    """Verify password against stored hash."""
+    if username.lower() not in registered_users:
+        return False
+    return _hasher.verify(password, registered_users[username.lower()])
+
+
+def get_tasks(username: str) -> list[dict]:
+    """Get tasks for a user"""
+    return user_tasks.setdefault(username.lower(), [])
+
+
+# ─── Landing / Home Page ──────────────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse)
 def landing():
+    """Render the landing page."""
     return """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -53,8 +219,6 @@ def landing():
     --gray-2: #2c2c2e;
     --gray-3: #48484a;
     --gray-5: #aeaeb2;
-    --gray-6: #d1d1d6;
-    --gray-7: #f2f2f7;
   }
 
   html { scroll-behavior: smooth; }
@@ -67,7 +231,6 @@ def landing():
     overflow-x: hidden;
   }
 
-  /* ── NAV ── */
   nav {
     position: fixed; top: 0; left: 0; right: 0; z-index: 100;
     display: flex; align-items: center; justify-content: space-between;
@@ -81,6 +244,7 @@ def landing():
     color: var(--white);
   }
   .nav-logo span { color: var(--red); }
+  .nav-actions { display: flex; gap: 12px; }
   .nav-cta {
     padding: 9px 22px; border-radius: 8px;
     background: var(--red); color: white;
@@ -88,8 +252,11 @@ def landing():
     text-decoration: none; transition: background 0.2s;
   }
   .nav-cta:hover { background: var(--red-dark); }
+  .nav-cta.secondary {
+    background: transparent; border: 1px solid rgba(255,255,255,0.2);
+  }
+  .nav-cta.secondary:hover { border-color: rgba(255,255,255,0.4); }
 
-  /* ── HERO ── */
   .hero {
     min-height: 100vh;
     display: flex; align-items: center; justify-content: center;
@@ -99,7 +266,6 @@ def landing():
     overflow: hidden;
   }
 
-  /* Subtle grid background */
   .hero::before {
     content: '';
     position: absolute; inset: 0;
@@ -110,7 +276,6 @@ def landing():
     mask-image: radial-gradient(ellipse 80% 80% at 50% 50%, black 40%, transparent 100%);
   }
 
-  /* Red glow blob */
   .hero::after {
     content: '';
     position: absolute;
@@ -143,9 +308,7 @@ def landing():
     margin-bottom: 24px;
     color: var(--white);
   }
-  .hero h1 em {
-    font-style: italic; color: var(--red);
-  }
+  .hero h1 em { font-style: italic; color: var(--red); }
 
   .hero-sub {
     font-size: 18px; font-weight: 300; line-height: 1.7;
@@ -172,7 +335,6 @@ def landing():
   }
   .btn-ghost:hover { border-color: rgba(255,255,255,0.3); color: var(--white); }
 
-  /* ── FEATURES ── */
   .features {
     padding: 120px 48px;
     max-width: 1100px; margin: 0 auto;
@@ -209,12 +371,11 @@ def landing():
   .feature h3 { font-size: 16px; font-weight: 600; margin-bottom: 10px; }
   .feature p { font-size: 14px; line-height: 1.7; color: var(--gray-5); }
 
-  /* ── LOGIN ── */
-  .login-section {
+  .auth-section {
     padding: 120px 24px;
     display: flex; align-items: center; justify-content: center;
   }
-  .login-card {
+  .auth-card {
     background: var(--gray-1);
     border: 1px solid rgba(255,255,255,0.06);
     border-radius: 20px;
@@ -222,13 +383,13 @@ def landing():
     width: 100%; max-width: 420px;
     box-shadow: 0 40px 80px rgba(0,0,0,0.4);
   }
-  .login-card h2 {
+  .auth-card h2 {
     font-family: 'Playfair Display', serif;
     font-size: 28px; font-weight: 700;
     margin-bottom: 8px;
   }
-  .login-card p {
-    font-size: 14px; color: var(--gray-5); margin-bottom: 36px;
+  .auth-card p {
+    font-size: 14px; color: var(--gray-5); margin-bottom: 24px;
   }
   .field { margin-bottom: 16px; }
   .field label {
@@ -245,20 +406,23 @@ def landing():
   }
   .field input:focus { outline: none; border-color: var(--red); }
   .field input::placeholder { color: var(--gray-3); }
-  .login-btn {
+
+  .auth-btn {
     width: 100%; padding: 14px;
     background: var(--red); border: none; border-radius: 10px;
     color: white; font-size: 15px; font-weight: 600;
     cursor: pointer; margin-top: 8px; transition: all 0.2s;
   }
-  .login-btn:hover { background: var(--red-dark); }
-  .error-msg {
-    background: rgba(230,57,70,0.12); border: 1px solid rgba(230,57,70,0.3);
-    border-radius: 8px; padding: 12px 16px;
-    color: #ff6b78; font-size: 13px; margin-bottom: 20px;
-  }
+  .auth-btn:hover { background: var(--red-dark); }
 
-  /* ── FOOTER ── */
+  .toggle-auth {
+    text-align: center; margin-top: 20px; font-size: 13px; color: var(--gray-5);
+  }
+  .toggle-auth a {
+    color: var(--red); text-decoration: none; font-weight: 600;
+  }
+  .toggle-auth a:hover { text-decoration: underline; }
+
   footer {
     border-top: 1px solid rgba(255,255,255,0.06);
     padding: 32px 48px;
@@ -268,14 +432,15 @@ def landing():
   .footer-logo { font-weight: 700; color: var(--gray-5); }
   .footer-logo span { color: var(--red); }
 
-  /* ── RESPONSIVE ── */
   @media (max-width: 768px) {
     nav { padding: 16px 20px; }
+    .nav-actions { gap: 8px; }
+    .nav-cta { padding: 8px 16px; font-size: 12px; }
     .features { padding: 80px 20px; }
     .features-grid { grid-template-columns: 1fr; gap: 2px; }
     .feature:first-child { border-radius: 12px 12px 0 0; }
     .feature:last-child { border-radius: 0 0 12px 12px; }
-    .login-card { padding: 36px 24px; }
+    .auth-card { padding: 36px 24px; }
     footer { flex-direction: column; gap: 8px; text-align: center; }
   }
 </style>
@@ -284,23 +449,24 @@ def landing():
 
 <nav>
   <div class="nav-logo">TASK<span>FLOW</span></div>
-  <a href="#login" class="nav-cta">Sign in</a>
+  <div class="nav-actions">
+    <a href="#signup" class="nav-cta secondary">Sign up</a>
+    <a href="#signin" class="nav-cta">Sign in</a>
+  </div>
 </nav>
 
-<!-- HERO -->
 <section class="hero">
   <div class="hero-content">
     <div class="hero-eyebrow"><span class="dot"></span> Your personal task OS</div>
     <h1>Stop managing tasks.<br>Start <em>owning</em> your time.</h1>
     <p class="hero-sub">Track priorities, deadlines, and progress — all in one clean workspace built for people who take their work seriously.</p>
     <div class="hero-actions">
-      <a href="#login" class="btn-primary">Open dashboard</a>
+      <a href="#signup" class="btn-primary">Get started free</a>
       <a href="#features" class="btn-ghost">See what's inside</a>
     </div>
   </div>
 </section>
 
-<!-- FEATURES -->
 <section class="features" id="features">
   <div class="section-label">Why Taskflow</div>
   <div class="section-title">Everything you need.<br>Nothing you don't.</div>
@@ -312,8 +478,8 @@ def landing():
     </div>
     <div class="feature">
       <div class="feature-icon">⏱️</div>
-      <h3>Deadline tracking</h3>
-      <p>Color-coded deadlines show you what's overdue, urgent, or safely scheduled — at a glance.</p>
+      <h3>Time tracking</h3>
+      <p>Set exact due dates and times. Color-coded deadlines show urgency at a glance.</p>
     </div>
     <div class="feature">
       <div class="feature-icon">📊</div>
@@ -323,99 +489,141 @@ def landing():
   </div>
 </section>
 
-<!-- LOGIN -->
-<section class="login-section" id="login">
-  <div class="login-card">
-    <h2>Welcome back</h2>
-    <p>Enter your password to access the dashboard.</p>
-    <form method="POST" action="/login">
+<section class="auth-section" id="signup">
+  <div class="auth-card">
+    <h2>Create account</h2>
+    <p>Join thousands managing their time better.</p>
+    <form method="POST" action="/register">
+      <div class="field">
+        <label>Username</label>
+        <input type="text" name="username" placeholder="Choose a username" autofocus required />
+      </div>
       <div class="field">
         <label>Password</label>
-        <input type="password" name="password" placeholder="Enter password" autofocus required />
+        <input type="password" name="password" placeholder="At least 3 characters" required />
       </div>
-      <button type="submit" class="login-btn">Access dashboard →</button>
+      <button type="submit" class="auth-btn">Create account →</button>
     </form>
+    <div class="toggle-auth">
+      Already have an account? <a href="#signin">Sign in</a>
+    </div>
+  </div>
+</section>
+
+<section class="auth-section" id="signin">
+  <div class="auth-card">
+    <h2>Welcome back</h2>
+    <p>Access your dashboard and tasks.</p>
+    <form method="POST" action="/login">
+      <div class="field">
+        <label>Username</label>
+        <input type="text" name="username" placeholder="Your username" autofocus required />
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input type="password" name="password" placeholder="Your password" required />
+      </div>
+      <button type="submit" class="auth-btn">Sign in →</button>
+    </form>
+    <div class="toggle-auth">
+      Don't have an account? <a href="#signup">Sign up</a>
+    </div>
   </div>
 </section>
 
 <footer>
   <div class="footer-logo">TASK<span>FLOW</span></div>
-  <div>Built with FastAPI · Deployed on Railway</div>
+  <div>Built with FastAPI · Zero clutter · Maximum focus</div>
 </footer>
 
 </body>
 </html>"""
 
 
-@app.get("/login-error", response_class=HTMLResponse)
-def login_error():
-    return """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Taskflow — Sign in</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:wght@400;700&display=swap" rel="stylesheet">
-<style>
-  *{margin:0;padding:0;box-sizing:border-box}
-  body{font-family:'Inter',sans-serif;background:#0a0a0a;color:#fafaf9;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
-  .card{background:#1c1c1e;border:1px solid rgba(255,255,255,0.06);border-radius:20px;padding:52px 48px;width:100%;max-width:420px}
-  h2{font-family:'Playfair Display',serif;font-size:28px;font-weight:700;margin-bottom:8px}
-  p{font-size:14px;color:#aeaeb2;margin-bottom:28px}
-  .error{background:rgba(230,57,70,0.12);border:1px solid rgba(230,57,70,0.3);border-radius:8px;padding:12px 16px;color:#ff6b78;font-size:13px;margin-bottom:20px}
-  label{display:block;font-size:12px;font-weight:600;letter-spacing:.4px;color:#aeaeb2;margin-bottom:8px;text-transform:uppercase}
-  input{width:100%;padding:13px 16px;background:#2c2c2e;border:1px solid rgba(255,255,255,0.08);border-radius:10px;color:#fafaf9;font-size:15px;font-family:'Inter',sans-serif;outline:none}
-  input:focus{border-color:#e63946}
-  button{width:100%;padding:14px;background:#e63946;border:none;border-radius:10px;color:white;font-size:15px;font-weight:600;cursor:pointer;margin-top:16px}
-  button:hover{background:#c1121f}
-  .back{display:block;text-align:center;margin-top:16px;color:#aeaeb2;font-size:13px;text-decoration:none}
-  .back:hover{color:#fafaf9}
-</style>
-</head>
-<body>
-<div class="card">
-  <h2>Incorrect password</h2>
-  <p>That password didn't match. Please try again.</p>
-  <div class="error">⚠ Invalid password</div>
-  <form method="POST" action="/login">
-    <label>Password</label>
-    <input type="password" name="password" placeholder="Enter password" autofocus required />
-    <button type="submit">Try again →</button>
-  </form>
-  <a href="/" class="back">← Back to home</a>
-</div>
-</body>
-</html>"""
-
-
 # ─── Auth Routes ──────────────────────────────────────────────────────────────
+@app.post("/register")
+def register(username: str = Form(...), password: str = Form(...)):
+    """Create a new user account"""
+    valid, error = validate_credentials(username, password)
+    if not valid:
+        return RedirectResponse(f"/?error={error}", status_code=302)
+
+    if username_exists(username):
+        return RedirectResponse("/?error=Username%20already%20taken", status_code=302)
+
+    registered_users[username.lower()] = hash_password(password)
+
+    token = secrets.token_hex(32)
+    sessions[token] = username.lower()
+
+    resp = RedirectResponse("/dashboard", status_code=302)
+    resp.set_cookie("session", token, httponly=True, max_age=86400 * 7)
+    return resp
+
+
 @app.post("/login")
-def login(response: Response, password: str = Form(...)):
-    if password == APP_PASSWORD:
-        token = secrets.token_hex(32)
-        sessions.add(token)
-        resp = RedirectResponse("/dashboard", status_code=302)
-        resp.set_cookie("session", token, httponly=True, max_age=86400 * 7)
-        return resp
-    return RedirectResponse("/login-error", status_code=302)
+def login(username: str = Form(...), password: str = Form(...)):
+    """Login with existing credentials"""
+    if not username_exists(username) or not check_password(username, password):
+        return RedirectResponse(
+            "/?error=Invalid%20username%20or%20password", status_code=302
+        )
+
+    token = secrets.token_hex(32)
+    sessions[token] = username.lower()
+
+    resp = RedirectResponse("/dashboard", status_code=302)
+    resp.set_cookie("session", token, httponly=True, max_age=86400 * 7)
+    return resp
 
 
 @app.get("/logout")
-def logout(response: Response, session: Optional[str] = Cookie(default=None)):
+def logout(session: Optional[str] = Cookie(default=None)):
+    """Logout and destroy session"""
     if session and session in sessions:
-        sessions.discard(session)
+        del sessions[session]
     resp = RedirectResponse("/", status_code=302)
     resp.delete_cookie("session")
     return resp
 
 
 # ─── Dashboard ────────────────────────────────────────────────────────────────
+def _task_display_props(task: dict) -> dict:
+    """Compute display properties for rendering a task row."""
+    try:
+        due_dt = datetime.strptime(task["due_date"], "%Y-%m-%dT%H:%M")
+        days_left = (due_dt.date() - date.today()).days
+        due_display = due_dt.strftime("%b %d · %I:%M %p")
+    except (ValueError, KeyError):
+        days_left = 0
+        due_display = task["due_date"]
+
+    s = _resolve_status(task, days_left)
+    status, status_class = s.label(), s.css_class()
+
+    priority = task["priority"].lower()
+    colors = {"high": "#dc2626", "medium": "#f59e0b", "low": "#10b981"}
+    bgs = {"high": "#fee2e2", "medium": "#fef3c7", "low": "#ecfdf5"}
+    return {
+        "due_display": due_display,
+        "status": status,
+        "status_class": status_class,
+        "color": colors.get(priority, "#666"),
+        "bg": bgs.get(priority, "white"),
+        "priority": priority,
+        "title_esc": task["title"].replace('"', "&quot;").replace("'", "&#39;"),
+        "cat_esc": task["category"].replace('"', "&quot;").replace("'", "&#39;"),
+    }
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(session: Optional[str] = Cookie(default=None)):
-    if not is_authenticated(session):
+    """Main dashboard view with dark/light theme support"""
+    username = get_current_user(session)
+    if not username:
         return RedirectResponse("/", status_code=302)
 
+    tasks = get_tasks(username)
     total = len(tasks)
     completed = len([t for t in tasks if t["completed"]])
     pending = total - completed
@@ -432,50 +640,19 @@ def dashboard(session: Optional[str] = Cookie(default=None)):
 
     tasks_html = ""
     for t in tasks:
-        try:
-            due = datetime.strptime(t["due_date"], "%Y-%m-%d").date()
-            days_left = (due - date.today()).days
-        except:
-            days_left = 0
-
-        if t["completed"]:
-            status = "Completed"
-            status_class = "completed"
-        elif days_left < 0:
-            n = abs(days_left)
-            status = f"Overdue by {n} day" + ("s" if n != 1 else "")
-            status_class = "overdue"
-        elif days_left == 0:
-            status = "Due today"
-            status_class = "urgent"
-        elif days_left == 1:
-            status = "Due tomorrow"
-            status_class = "upcoming"
-        else:
-            status = f"{days_left} days left"
-            status_class = "normal"
-
-        priority = t["priority"].lower()
-        priority_colors = {"high": "#dc2626", "medium": "#f59e0b", "low": "#10b981"}
-        priority_bg = {"high": "#fee2e2", "medium": "#fef3c7", "low": "#ecfdf5"}
-        color = priority_colors.get(priority, "#666")
-        bg = priority_bg.get(priority, "white")
-
-        title_esc = t["title"].replace('"', '&quot;').replace("'", "&#39;")
-        cat_esc = t["category"].replace('"', '&quot;').replace("'", "&#39;")
-
-        tasks_html += f"""<div class="task-item {status_class}" style="background-color:{bg}">
+        d = _task_display_props(t)
+        tasks_html += f"""<div class="task-item {d['status_class']}" style="background-color:{d['bg']}">
             <a href="/task/complete/{t['id']}" class="checkbox {'checked' if t['completed'] else ''}">
                 {'✓' if t['completed'] else ''}
             </a>
             <div class="task-main">
                 <h3>{t['title']}</h3>
-                <p class="task-meta">{t['category']} · {t['task_type']} · {t['due_date']}</p>
+                <p class="task-meta">{t['category']} · {t['task_type']} · {d['due_display']}</p>
             </div>
-            <span class="badge" style="background:{color}22;color:{color};border:1px solid {color}44">{priority.upper()}</span>
-            <span class="status-label">{status}</span>
+            <span class="badge" style="background:{d['color']}22;color:{d['color']};border:1px solid {d['color']}44">{d['priority'].upper()}</span>
+            <span class="status-label">{d['status']}</span>
             <div class="actions">
-                <button onclick="openEdit({t['id']},'{title_esc}','{cat_esc}','{priority}','{t['due_date']}','{t['task_type']}')" class="edit-btn">Edit</button>
+                <button onclick="openEdit({t['id']},'{d['title_esc']}','{d['cat_esc']}','{d['priority']}','{t['due_date']}','{t['task_type']}')" class="edit-btn">Edit</button>
                 <a href="/task/delete/{t['id']}" class="delete-btn" onclick="return confirm('Delete this task?')">Delete</a>
             </div>
         </div>"""
@@ -489,164 +666,216 @@ def dashboard(session: Optional[str] = Cookie(default=None)):
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:wght@700&display=swap" rel="stylesheet">
 <style>
-  *, *::before, *::after {{ margin:0; padding:0; box-sizing:border-box; }}
-  body {{ font-family:'Inter',sans-serif; background:#f5f4f2; color:#1a1a1a; }}
+  :root {{
+    /* Dark theme (navy) */
+    --bg-primary: #0f1419;
+    --bg-secondary: #1a1f2e;
+    --bg-tertiary: #232a3e;
+    --text-primary: #f8fafb;
+    --text-secondary: #b0b9c6;
+    --text-tertiary: #8892a1;
+    --border: rgba(255, 255, 255, 0.08);
+    --accent: #e63946;
+    --success: #10b981;
+    --warning: #f59e0b;
+    --danger: #dc2626;
+  }}
 
-  /* NAV */
+  html[data-theme="light"] {{
+    --bg-primary: #fefdfb;
+    --bg-secondary: #f8f6f0;
+    --bg-tertiary: #f0ede4;
+    --text-primary: #2d2620;
+    --text-secondary: #6b6159;
+    --text-tertiary: #8b7d72;
+    --border: rgba(45, 38, 32, 0.08);
+    --accent: #d84c4c;
+    --success: #059669;
+    --warning: #d97706;
+    --danger: #b91c1c;
+  }}
+
+  *, *::before, *::after {{ margin:0; padding:0; box-sizing:border-box; }}
+  body {{
+    font-family:'Inter',sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    transition: background 0.3s, color 0.3s;
+  }}
+
   .topbar {{
     position:fixed; top:0; left:0; right:0; z-index:100;
-    background:#0a0a0a; padding:0 32px;
+    background: var(--bg-secondary);
+    padding:0 32px;
     display:flex; align-items:center; justify-content:space-between;
-    height:56px; border-bottom:1px solid rgba(255,255,255,0.06);
+    height:56px; border-bottom:1px solid var(--border);
+    backdrop-filter: blur(8px);
+    transition: background 0.3s;
   }}
-  .topbar-logo {{ font-weight:700; font-size:16px; color:#fafaf9; }}
-  .topbar-logo span {{ color:#e63946; }}
+  .topbar-logo {{ font-weight:700; font-size:16px; color:var(--text-primary); }}
+  .topbar-logo span {{ color:var(--accent); }}
   .topbar-right {{ display:flex; align-items:center; gap:16px; }}
-  .topbar-date {{ font-size:13px; color:#6b7280; }}
+  .topbar-info {{ font-size:13px; color:var(--text-secondary); }}
+
+  .theme-toggle {{
+    width:40px; height:40px; border-radius:8px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+    transition: all 0.2s;
+  }}
+  .theme-toggle:hover {{
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+  }}
+
   .logout {{
     padding:7px 16px; border-radius:7px;
-    border:1px solid rgba(255,255,255,0.12); color:#aeaeb2;
+    border:1px solid var(--border); color:var(--text-secondary);
     font-size:12px; font-weight:500; text-decoration:none;
     transition:all 0.2s;
   }}
-  .logout:hover {{ border-color:rgba(255,255,255,0.3); color:#fafaf9; }}
+  .logout:hover {{ border-color:var(--text-primary); color:var(--text-primary); }}
 
-  /* LAYOUT */
   .page {{ max-width:1200px; margin:0 auto; padding:80px 32px 60px; display:grid; grid-template-columns:1fr 280px; gap:40px; }}
 
-  /* HEADER */
   .page-header {{ grid-column:1; margin-bottom:8px; }}
   .page-header h1 {{
     font-family:'Playfair Display',serif;
     font-size:36px; font-weight:700; letter-spacing:-0.5px;
-    margin-bottom:6px;
+    margin-bottom:6px; color: var(--text-primary);
   }}
-  .page-header p {{ font-size:14px; color:#6b7280; }}
+  .page-header p {{ font-size:14px; color:var(--text-secondary); }}
 
-  /* FORM */
   .form-card {{
-    grid-column:1; background:white; padding:28px 32px;
+    grid-column:1; background:var(--bg-secondary); padding:28px 32px;
     border-radius:14px; margin-bottom:32px;
+    border: 1px solid var(--border);
     box-shadow:0 1px 3px rgba(0,0,0,0.05);
+    transition: background 0.3s;
   }}
-  .form-card-title {{ font-size:13px; font-weight:600; color:#6b7280; text-transform:uppercase; letter-spacing:0.6px; margin-bottom:20px; }}
+  .form-card-title {{ font-size:13px; font-weight:600; color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.6px; margin-bottom:20px; }}
   .form-grid {{ display:grid; gap:12px; }}
   .form-row {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }}
   .form-full {{ grid-column:1/-1; }}
-  input[type=text], input[type=date], select {{
+  input[type=text], input[type=datetime-local], select {{
     width:100%; padding:10px 14px;
-    border:1px solid #e5e7eb; border-radius:8px;
-    font-size:14px; font-family:'Inter',sans-serif; color:#1a1a1a;
-    background:white; transition:border-color 0.2s;
+    border:1px solid var(--border); border-radius:8px;
+    font-size:14px; font-family:'Inter',sans-serif;
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+    transition:border-color 0.2s, background 0.3s;
   }}
-  input[type=text]:focus, input[type=date]:focus, select:focus {{
-    outline:none; border-color:#1a1a1a;
-    box-shadow:0 0 0 3px rgba(26,26,26,0.05);
+  input[type=text]:focus, input[type=datetime-local]:focus, select:focus {{
+    outline:none; border-color:var(--accent);
+    box-shadow:0 0 0 3px rgba(230,57,70,0.1);
   }}
   .btn-add {{
-    width:100%; padding:11px; background:#0a0a0a; color:white;
+    width:100%; padding:11px; background:var(--accent); color:white;
     border:none; border-radius:8px; font-weight:600; font-size:14px;
     cursor:pointer; transition:opacity 0.2s;
   }}
   .btn-add:hover {{ opacity:0.85; }}
 
-  /* TASKS */
   .tasks-list {{ grid-column:1; display:flex; flex-direction:column; gap:10px; }}
   .tasks-header {{ display:flex; align-items:center; justify-content:space-between; margin-bottom:4px; }}
-  .tasks-header h2 {{ font-size:15px; font-weight:600; }}
-  .tasks-count {{ font-size:12px; color:#6b7280; }}
+  .tasks-header h2 {{ font-size:15px; font-weight:600; color: var(--text-primary); }}
+  .tasks-count {{ font-size:12px; color:var(--text-secondary); }}
 
   .task-item {{
-    background:white; padding:16px 20px; border-radius:12px;
+    background:var(--bg-secondary); padding:16px 20px; border-radius:12px;
     display:grid; grid-template-columns:28px 1fr 80px 130px auto;
     gap:14px; align-items:center;
-    box-shadow:0 1px 3px rgba(0,0,0,0.05);
-    border-left:3px solid #e5e7eb;
+    border-left:3px solid var(--border);
     transition:all 0.15s;
   }}
-  .task-item:hover {{ transform:translateY(-1px); box-shadow:0 4px 12px rgba(0,0,0,0.08); }}
-  .task-item.completed {{ opacity:0.55; }}
-  .task-item.completed h3 {{ text-decoration:line-through; color:#6b7280; }}
-  .task-item.urgent {{ border-left-color:#e63946; }}
-  .task-item.overdue {{ border-left-color:#e63946; }}
-  .task-item.upcoming {{ border-left-color:#f59e0b; }}
+  .task-item:hover {{ transform:translateY(-1px); border-left-color: var(--accent); }}
+  .task-item.completed {{ opacity:0.5; }}
+  .task-item.completed h3 {{ text-decoration:line-through; color:var(--text-tertiary); }}
+  .task-item.urgent {{ border-left-color:var(--danger); }}
+  .task-item.overdue {{ border-left-color:var(--danger); }}
+  .task-item.upcoming {{ border-left-color:var(--warning); }}
 
   .checkbox {{
-    width:22px; height:22px; border:2px solid #d1d5db;
+    width:22px; height:22px; border:2px solid var(--border);
     border-radius:6px; display:flex; align-items:center; justify-content:center;
     cursor:pointer; text-decoration:none; color:white;
     font-size:11px; font-weight:700; transition:all 0.15s;
   }}
-  .checkbox:hover:not(.checked) {{ border-color:#1a1a1a; }}
-  .checkbox.checked {{ background:#10b981; border-color:#10b981; }}
+  .checkbox:hover:not(.checked) {{ border-color:var(--text-primary); }}
+  .checkbox.checked {{ background:var(--success); border-color:var(--success); }}
 
-  .task-main h3 {{ font-size:14px; font-weight:500; margin-bottom:4px; }}
-  .task-meta {{ font-size:11px; color:#9ca3af; }}
+  .task-main h3 {{ font-size:14px; font-weight:500; margin-bottom:4px; color: var(--text-primary); }}
+  .task-meta {{ font-size:11px; color:var(--text-tertiary); }}
   .badge {{ padding:3px 9px; border-radius:5px; font-size:11px; font-weight:600; white-space:nowrap; }}
-  .status-label {{ font-size:11px; font-weight:600; color:#6b7280; }}
+  .status-label {{ font-size:11px; font-weight:600; color:var(--text-secondary); }}
   .actions {{ display:flex; gap:6px; }}
   .edit-btn, .delete-btn {{
     padding:5px 10px; border-radius:6px; font-size:11px;
     font-weight:600; border:none; cursor:pointer;
     text-decoration:none; transition:all 0.15s;
   }}
-  .edit-btn {{ background:#f3f4f6; color:#374151; }}
-  .edit-btn:hover {{ background:#e5e7eb; }}
-  .delete-btn {{ background:#fef2f2; color:#dc2626; }}
-  .delete-btn:hover {{ background:#fee2e2; }}
+  .edit-btn {{ background:var(--bg-tertiary); color:var(--text-primary); }}
+  .edit-btn:hover {{ background: var(--border); }}
+  .delete-btn {{ background: rgba(220,38,38,0.15); color:var(--danger); }}
+  .delete-btn:hover {{ background: rgba(220,38,38,0.25); }}
 
   .empty-state {{
     grid-column:1; text-align:center; padding:60px 20px;
-    background:white; border-radius:14px;
-    box-shadow:0 1px 3px rgba(0,0,0,0.05);
+    background:var(--bg-secondary); border-radius:14px;
+    border: 1px solid var(--border);
   }}
   .empty-icon {{ font-size:40px; margin-bottom:16px; }}
-  .empty-state h3 {{ font-size:16px; font-weight:600; margin-bottom:8px; }}
-  .empty-state p {{ font-size:13px; color:#6b7280; }}
+  .empty-state h3 {{ font-size:16px; font-weight:600; margin-bottom:8px; color: var(--text-primary); }}
+  .empty-state p {{ font-size:13px; color:var(--text-secondary); }}
 
-  /* SIDEBAR */
   .sidebar {{ position:sticky; top:72px; height:fit-content; display:flex; flex-direction:column; gap:14px; }}
   .stat-card {{
-    background:white; padding:20px 24px; border-radius:14px;
-    box-shadow:0 1px 3px rgba(0,0,0,0.05); text-align:center;
+    background:var(--bg-secondary); padding:20px 24px; border-radius:14px;
+    border: 1px solid var(--border);
+    text-align:center;
   }}
-  .stat-label {{ font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#9ca3af; margin-bottom:6px; }}
-  .stat-num {{ font-size:40px; font-weight:300; color:#0a0a0a; line-height:1; }}
+  .stat-label {{ font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:var(--text-tertiary); margin-bottom:6px; }}
+  .stat-num {{ font-size:40px; font-weight:300; color:var(--text-primary); line-height:1; }}
   .progress-card {{
-    background:white; padding:24px; border-radius:14px;
-    box-shadow:0 1px 3px rgba(0,0,0,0.05); text-align:center;
+    background:var(--bg-secondary); padding:24px; border-radius:14px;
+    border: 1px solid var(--border);
+    text-align:center;
   }}
   .ring-wrap {{ width:96px; height:96px; margin:0 auto 12px; }}
   .ring-wrap svg {{ width:100%; height:100%; transform:rotate(-90deg); }}
-  .ring-bg {{ fill:none; stroke:#f3f4f6; stroke-width:7; }}
+  .ring-bg {{ fill:none; stroke:var(--border); stroke-width:7; }}
   .ring-fill {{
     fill:none; stroke:{ring_color}; stroke-width:7; stroke-linecap:round;
-    stroke-dasharray:282; stroke-dashoffset:{282 - (progress/100*282):.1f};
+    stroke-dasharray:282; stroke-dashoffset:{282 - (progress / 100 * 282):.1f};
     transition:stroke-dashoffset 0.6s ease;
   }}
   .progress-pct {{ font-size:22px; font-weight:300; color:{ring_color}; }}
 
-  /* MODAL */
   .modal {{
     display:none; position:fixed; inset:0;
-    background:rgba(0,0,0,0.4); z-index:999;
+    background:rgba(0,0,0,0.5); z-index:999;
     align-items:center; justify-content:center;
     backdrop-filter:blur(4px);
   }}
   .modal.active {{ display:flex; }}
   .modal-box {{
-    background:white; padding:36px; border-radius:16px;
+    background:var(--bg-secondary); padding:36px; border-radius:16px;
     width:90%; max-width:420px;
+    border: 1px solid var(--border);
     box-shadow:0 24px 64px rgba(0,0,0,0.2);
   }}
-  .modal-box h2 {{ font-size:18px; font-weight:700; margin-bottom:20px; }}
+  .modal-box h2 {{ font-size:18px; font-weight:700; margin-bottom:20px; color: var(--text-primary); }}
   .modal-form {{ display:grid; gap:11px; }}
   .modal-actions {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:20px; }}
   .modal-btn {{ padding:11px; border-radius:8px; border:none; font-weight:600; cursor:pointer; font-size:14px; }}
-  .cancel-btn {{ background:#f3f4f6; color:#374151; }}
-  .save-btn {{ background:#0a0a0a; color:white; }}
+  .cancel-btn {{ background:var(--bg-tertiary); color:var(--text-primary); }}
+  .save-btn {{ background:var(--accent); color:white; }}
 
-  /* RESPONSIVE */
   @media(max-width:900px) {{
     .page {{ grid-template-columns:1fr; }}
     .sidebar {{ display:grid; grid-template-columns:repeat(4,1fr); position:static; }}
@@ -660,16 +889,17 @@ def dashboard(session: Optional[str] = Cookie(default=None)):
 <div class="topbar">
   <div class="topbar-logo">TASK<span>FLOW</span></div>
   <div class="topbar-right">
-    <span class="topbar-date">{date.today().strftime('%B %d, %Y')}</span>
+    <span class="topbar-info">👤 {username}</span>
+    <span class="topbar-info">{date.today().strftime('%b %d, %Y')}</span>
+    <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">🌙</button>
     <a href="/logout" class="logout">Sign out</a>
   </div>
 </div>
 
 <div class="page">
-
   <div>
     <div class="page-header">
-      <h1>Your Dashboard</h1>
+      <h1>Hey, {username.capitalize()} 👋</h1>
       <p>Stay on top of every commitment.</p>
     </div>
 
@@ -682,7 +912,7 @@ def dashboard(session: Optional[str] = Cookie(default=None)):
           </div>
           <div class="form-row">
             <input type="text" name="category" placeholder="Category" required />
-            <input type="date" name="due_date" required />
+            <input type="datetime-local" name="due_date" required />
           </div>
           <div class="form-row">
             <select name="priority" required>
@@ -698,7 +928,7 @@ def dashboard(session: Optional[str] = Cookie(default=None)):
             </select>
           </div>
           <div class="form-full">
-            <button type="submit" class="btn-add">Add task</button>
+            <button type="submit" class="btn-add">Add task →</button>
           </div>
         </div>
       </form>
@@ -713,7 +943,7 @@ def dashboard(session: Optional[str] = Cookie(default=None)):
       {tasks_html if tasks_html else '''<div class="empty-state">
         <div class="empty-icon">✅</div>
         <h3>No tasks yet</h3>
-        <p>Create your first task using the form above.</p>
+        <p>Create your first task using the form above and start tracking your time.</p>
       </div>'''}
     </div>
   </div>
@@ -742,10 +972,8 @@ def dashboard(session: Optional[str] = Cookie(default=None)):
       <div class="progress-pct">{progress}%</div>
     </div>
   </div>
-
 </div>
 
-<!-- EDIT MODAL -->
 <div id="editModal" class="modal">
   <div class="modal-box">
     <h2>Edit task</h2>
@@ -753,7 +981,7 @@ def dashboard(session: Optional[str] = Cookie(default=None)):
       <div class="modal-form">
         <input type="text" id="editTitle" name="title" placeholder="Title" required />
         <input type="text" id="editCategory" name="category" placeholder="Category" required />
-        <input type="date" id="editDueDate" name="due_date" required />
+        <input type="datetime-local" id="editDueDate" name="due_date" required />
         <select id="editPriority" name="priority" required>
           <option value="High">High</option>
           <option value="Medium">Medium</option>
@@ -773,6 +1001,30 @@ def dashboard(session: Optional[str] = Cookie(default=None)):
 </div>
 
 <script>
+  // Theme toggle
+  function toggleTheme() {{
+    const html = document.documentElement;
+    const currentTheme = html.getAttribute('data-theme') || 'dark';
+    const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+    html.setAttribute('data-theme', newTheme);
+    localStorage.setItem('theme', newTheme);
+    updateThemeIcon();
+  }}
+
+  function updateThemeIcon() {{
+    const theme = document.documentElement.getAttribute('data-theme') || 'dark';
+    const btn = document.querySelector('.theme-toggle');
+    btn.textContent = theme === 'dark' ? '☀️' : '🌙';
+  }}
+
+  // Load saved theme on page load
+  document.addEventListener('DOMContentLoaded', () => {{
+    const saved = localStorage.getItem('theme') || 'dark';
+    document.documentElement.setAttribute('data-theme', saved);
+    updateThemeIcon();
+  }});
+
+  // Modal functions
   function openEdit(id, title, category, priority, dueDate, taskType) {{
     document.getElementById('editTitle').value = title;
     document.getElementById('editCategory').value = category;
@@ -782,9 +1034,11 @@ def dashboard(session: Optional[str] = Cookie(default=None)):
     document.getElementById('editForm').action = '/task/edit/' + id;
     document.getElementById('editModal').classList.add('active');
   }}
+
   function closeEdit() {{
     document.getElementById('editModal').classList.remove('active');
   }}
+
   window.onclick = e => {{
     if (e.target === document.getElementById('editModal')) closeEdit();
   }}
@@ -793,39 +1047,40 @@ def dashboard(session: Optional[str] = Cookie(default=None)):
 </html>"""
 
 
-# ─── Task Routes (auth-gated) ──────────────────────────────────────────────────
-def auth_redirect(session):
-    if not is_authenticated(session):
-        return RedirectResponse("/", status_code=302)
-    return None
-
-
+# ─── Task Routes ──────────────────────────────────────────────────────────────
 @app.post("/task/add")
 def task_add(
     session: Optional[str] = Cookie(default=None),
-    title: str = Form(...), category: str = Form(...),
-    priority: str = Form(...), task_type: str = Form(...), due_date: str = Form(...),
+    title: str = Form(...),
+    category: str = Form(...),
+    priority: str = Form(...),
+    task_type: str = Form(...),
+    due_date: str = Form(...),
 ):
-    global next_task_id
-    if not is_authenticated(session):
+    """Add a new task"""
+    username = get_current_user(session)
+    if not username:
         return RedirectResponse("/", status_code=302)
-    tasks.append({
-        "id": next_task_id, "title": title, "category": category,
-        "priority": priority, "due_date": due_date,
-        "task_type": task_type, "completed": False,
-    })
-    next_task_id += 1
+
+    cls = WorkTask if task_type.lower() == "work" else PersonalTask
+    get_tasks(username).append(
+        cls(next(task_id_counter), title, category, priority, due_date).to_dict()
+    )
     return RedirectResponse("/dashboard", status_code=302)
 
 
 @app.get("/task/complete/{task_id}")
 def task_complete(task_id: int, session: Optional[str] = Cookie(default=None)):
-    if not is_authenticated(session):
+    """Toggle task completion"""
+    username = get_current_user(session)
+    if not username:
         return RedirectResponse("/", status_code=302)
-    for t in tasks:
+
+    for t in get_tasks(username):
         if t["id"] == task_id:
             t["completed"] = not t["completed"]
             break
+
     return RedirectResponse("/dashboard", status_code=302)
 
 
@@ -833,23 +1088,37 @@ def task_complete(task_id: int, session: Optional[str] = Cookie(default=None)):
 def task_edit(
     task_id: int,
     session: Optional[str] = Cookie(default=None),
-    title: str = Form(...), category: str = Form(...),
-    priority: str = Form(...), due_date: str = Form(...), task_type: str = Form(...),
+    title: str = Form(...),
+    category: str = Form(...),
+    priority: str = Form(...),
+    due_date: str = Form(...),
+    task_type: str = Form(...),
 ):
-    if not is_authenticated(session):
+    """Edit an existing task"""
+    username = get_current_user(session)
+    if not username:
         return RedirectResponse("/", status_code=302)
-    for t in tasks:
+
+    for t in get_tasks(username):
         if t["id"] == task_id:
-            t.update(title=title, category=category, priority=priority,
-                     due_date=due_date, task_type=task_type)
+            t.update(
+                title=title,
+                category=category,
+                priority=priority,
+                due_date=due_date,
+                task_type=task_type,
+            )
             break
+
     return RedirectResponse("/dashboard", status_code=302)
 
 
 @app.get("/task/delete/{task_id}")
 def task_delete(task_id: int, session: Optional[str] = Cookie(default=None)):
-    global tasks
-    if not is_authenticated(session):
+    """Delete a task"""
+    username = get_current_user(session)
+    if not username:
         return RedirectResponse("/", status_code=302)
-    tasks = [t for t in tasks if t["id"] != task_id]
+
+    user_tasks[username] = [t for t in get_tasks(username) if t["id"] != task_id]
     return RedirectResponse("/dashboard", status_code=302)
