@@ -133,8 +133,4 @@ Railway Deployment ☁️
 
 TaskFlow demonstrates real-world backend engineering: authentication flows, CRUD systems, session handling, and deployment — packaged in a clean SaaS-style product structure.
 
----
 
-## 💡 Author
-
-Built as a backend engineering portfolio project using FastAPI ⚡
