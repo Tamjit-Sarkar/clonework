@@ -19,7 +19,7 @@ It is built with a focus on:
 - Clean architecture 🧠  
 - Secure authentication 🔐  
 - Fast performance ⚡  
-- Simple SaaS-style UX 🎯  
+
 
 ---
 
@@ -118,19 +118,5 @@ Railway Deployment ☁️
 👤 User-isolated task management  
 📦 Easy Railway deployment  
 🧠 Simple but scalable architecture  
-
----
-
-## 🧾 Notes
-
-- Data resets on restart (in-memory storage)  
-- Sessions may reset depending on deployment  
-- Built for learning, demos, and portfolio use  
-
----
-
-## 🚀 Purpose
-
-TaskFlow demonstrates real-world backend engineering: authentication flows, CRUD systems, session handling, and deployment — packaged in a clean SaaS-style product structure.
 
 
